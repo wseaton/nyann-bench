@@ -550,6 +550,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Stop:          conv.Stop,
 		Temperature:   conv.Temperature,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.requestHeaders(convID, 0),
 	}
 
 	g.trackInFlight(1)
@@ -567,6 +568,11 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		defer g.recordWG.Done()
 		g.recordResult(result, streamID, convID, 0, conv)
 	}()
+}
+
+// requestHeaders stamps X-Request-Id with the model and the record id.
+func (g *Generator) requestHeaders(convID string, turn int) map[string]string {
+	return map[string]string{"X-Request-Id": fmt.Sprintf("%s|%s-t%d", g.Model, convID, turn)}
 }
 
 // recordResult handles eval, metrics, and recording for a completed request.
@@ -714,6 +720,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			StreamOptions: g.streamOptions(),
 			MaxTokens:     conv.MaxTokens,
 			CacheSalt:     g.cacheSalt(),
+			ExtraHeaders:  g.requestHeaders(convID, turnIdx),
 		}
 
 		g.trackInFlight(1)
