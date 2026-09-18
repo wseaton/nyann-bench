@@ -70,6 +70,35 @@ type Workload struct {
 	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
 	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
 	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
+	SystemPrompt   string     `json:"system_prompt,omitempty"`    // fixed system message sent first on every chat request (not counted in ISL)
+	SessionHeader  string     `json:"session_header,omitempty"`   // header carrying a random per-conversation session id on every turn
+	ThinkTime      *ThinkTime `json:"think_time,omitempty"`       // pause between turns of a conversation
+	RecordHeaders  []string   `json:"record_headers,omitempty"`   // response headers copied into each request record
+}
+
+// ThinkTime draws the pause between a response and the conversation's next
+// turn from a lognormal distribution: Median * exp(Sigma * N(0,1)), capped at
+// Max. Sigma 0 gives a constant pause.
+type ThinkTime struct {
+	Median Duration `json:"median"`
+	Sigma  float64  `json:"sigma,omitempty"`
+	Max    Duration `json:"max,omitempty"` // 0 = uncapped
+}
+
+func (t *ThinkTime) validate() error {
+	if t.Median <= 0 {
+		return fmt.Errorf("think_time median must be > 0, got %s", t.Median.Duration())
+	}
+	if t.Sigma < 0 {
+		return fmt.Errorf("think_time sigma must be >= 0, got %v", t.Sigma)
+	}
+	if t.Max < 0 {
+		return fmt.Errorf("think_time max must be >= 0, got %s", t.Max.Duration())
+	}
+	if t.Max > 0 && t.Max < t.Median {
+		return fmt.Errorf("think_time max (%s) must be >= median (%s)", t.Max.Duration(), t.Median.Duration())
+	}
+	return nil
 }
 
 // CacheSalt configures vLLM prefix cache isolation.

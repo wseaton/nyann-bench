@@ -105,6 +105,12 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
+		systemPrompt   starlark.Value = starlark.None
+		sessionHeader  starlark.Value = starlark.None
+		thinkTime      starlark.Value = starlark.None
+		thinkTimeSigma starlark.Value = starlark.None
+		thinkTimeMax   starlark.Value = starlark.None
+		recordHeaders  starlark.Value = starlark.None
 	)
 
 	if err := starlark.UnpackArgs("workload", args, kwargs,
@@ -121,6 +127,12 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
+		"system_prompt?", &systemPrompt,
+		"session_header?", &sessionHeader,
+		"think_time?", &thinkTime,
+		"think_time_sigma?", &thinkTimeSigma,
+		"think_time_max?", &thinkTimeMax,
+		"record_headers?", &recordHeaders,
 	); err != nil {
 		return nil, err
 	}
@@ -146,6 +158,39 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		return nil, fmt.Errorf("gpqa_path is required when type is \"gpqa\"")
 	}
 
+	if thinkTime == starlark.None && (thinkTimeSigma != starlark.None || thinkTimeMax != starlark.None) {
+		return nil, fmt.Errorf("think_time_sigma and think_time_max require think_time")
+	}
+	for _, v := range []struct {
+		name string
+		val  starlark.Value
+	}{{"think_time", thinkTime}, {"think_time_max", thinkTimeMax}} {
+		if v.val == starlark.None {
+			continue
+		}
+		if _, err := parseDurationValue(v.val); err != nil {
+			return nil, fmt.Errorf("%s: %w", v.name, err)
+		}
+	}
+	if thinkTimeSigma != starlark.None {
+		switch thinkTimeSigma.(type) {
+		case starlark.Float, starlark.Int:
+		default:
+			return nil, fmt.Errorf("think_time_sigma must be a number, got %s", thinkTimeSigma.Type())
+		}
+	}
+	if recordHeaders != starlark.None {
+		list, ok := recordHeaders.(*starlark.List)
+		if !ok {
+			return nil, fmt.Errorf("record_headers must be a list of strings, got %s", recordHeaders.Type())
+		}
+		for i := 0; i < list.Len(); i++ {
+			if _, ok := list.Index(i).(starlark.String); !ok {
+				return nil, fmt.Errorf("record_headers[%d] must be a string, got %s", i, list.Index(i).Type())
+			}
+		}
+	}
+
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeWorkload), starlark.StringDict{
 		"type":             starlark.String(typ),
 		"isl":              starlark.MakeInt(isl),
@@ -160,6 +205,12 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token":  starlark.Float(charsPerToken),
 		"cache_salt":       cacheSalt,
 		"name":             name,
+		"system_prompt":    systemPrompt,
+		"session_header":   sessionHeader,
+		"think_time":       thinkTime,
+		"think_time_sigma": thinkTimeSigma,
+		"think_time_max":   thinkTimeMax,
+		"record_headers":   recordHeaders,
 	}), nil
 }
 
@@ -482,6 +533,39 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 
 	name, _ := s.Attr("name")
 	w.Name = starlarkString(name)
+
+	systemPrompt, _ := s.Attr("system_prompt")
+	w.SystemPrompt = starlarkString(systemPrompt)
+
+	sessionHeader, _ := s.Attr("session_header")
+	w.SessionHeader = starlarkString(sessionHeader)
+
+	thinkTime, _ := s.Attr("think_time")
+	if thinkTime != starlark.None {
+		median, err := parseDurationValue(thinkTime)
+		if err != nil {
+			return nil, fmt.Errorf("think_time: %w", err)
+		}
+		tt := &ThinkTime{Median: Duration(median)}
+		sigma, _ := s.Attr("think_time_sigma")
+		tt.Sigma = starlarkFloat(sigma)
+		maxVal, _ := s.Attr("think_time_max")
+		if maxVal != starlark.None {
+			m, err := parseDurationValue(maxVal)
+			if err != nil {
+				return nil, fmt.Errorf("think_time_max: %w", err)
+			}
+			tt.Max = Duration(m)
+		}
+		w.ThinkTime = tt
+	}
+
+	recordHeaders, _ := s.Attr("record_headers")
+	if list, ok := recordHeaders.(*starlark.List); ok {
+		for i := 0; i < list.Len(); i++ {
+			w.RecordHeaders = append(w.RecordHeaders, starlarkString(list.Index(i)))
+		}
+	}
 
 	return w, nil
 }

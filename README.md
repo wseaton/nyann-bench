@@ -190,6 +190,28 @@ scenario(
 )
 ```
 
+### Agentic sessions
+
+In `poisson` or `constant` mode each arrival starts a whole conversation, so `rate` is the session arrival rate. Three workload options shape the sessions:
+
+- `session_header` sends a random per-conversation id in the named header on every turn, for routers that pin sessions to a replica.
+- `think_time` pauses between a response and the conversation's next turn, standing in for tool execution. Draws are lognormal: `think_time` is the median, `think_time_sigma` the spread (0 = constant), `think_time_max` the cap. Not supported in `conversation_pool` mode.
+- `record_headers` copies the named response headers into each request record, e.g. a gateway header naming the replica that served the turn.
+
+```python
+scenario(
+    stages = [stage("20m", mode="poisson", rate=0.5)],
+    workload = workload(
+        "synthetic", isl=6000, subsequent_isl=1500, osl=200, turns=20,
+        session_header="x-session-id",
+        think_time="5s", think_time_sigma=1.2, think_time_max="10m",
+        record_headers=["x-upstream-host"],
+    ),
+)
+```
+
+A dispatched session holds its `max_inflight` slot through its think time, and a stage waits for the sessions it started to finish.
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
@@ -259,7 +281,7 @@ Or with a YAML or Starlark config file:
 | `corpus` | Sliding window over real text files (ShareGPT, custom corpora) |
 | `gsm8k` | Grade School Math 8K with few-shot prompting and streaming eval |
 
-All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`.
+All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`. A fixed `system_prompt` is sent as the leading system message on every request, giving the workload a shared prompt prefix; its tokens are not counted toward ISL.
 
 ## Load modes
 
@@ -274,7 +296,7 @@ All workload types support configurable ISL (input sequence length), OSL (output
 
 Each worker produces:
 
-- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason.
+- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason. `cached_tokens` is present when the server reports prompt tokens served from its prefix cache (vLLM: `--enable-prompt-tokens-details`); `session_id` and `headers` are present when the workload sets `session_header` and `record_headers`.
 - **`timestamps_N.json`** — start/end times for each stage, for Prometheus range queries.
 
 Merging across workers: `cat requests_*.jsonl`.

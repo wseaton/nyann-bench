@@ -11,20 +11,23 @@ import (
 
 // Record is a single completed request record written to JSONL.
 type Record struct {
-	RequestID      string    `json:"id"`
-	StreamID       int       `json:"stream"`
-	ConversationID string    `json:"conv_id"`
-	Turn           int       `json:"turn"`
-	StartTime      float64   `json:"t0"`
-	TTFT           float64   `json:"ttft_ms"`
-	ITLs           []float64 `json:"itls_ms,omitempty"`
-	EndTime        float64   `json:"tend"`
-	PromptTokens   int       `json:"prompt_tokens"`
-	OutputTokens   int       `json:"output_tokens"`
-	TotalLatencyMs float64   `json:"latency_ms"`
-	FinishReason   string    `json:"finish_reason,omitempty"`
-	Status         string    `json:"status"` // "ok" or "error"
-	Error          string    `json:"error,omitempty"`
+	RequestID      string            `json:"id"`
+	StreamID       int               `json:"stream"`
+	ConversationID string            `json:"conv_id"`
+	SessionID      string            `json:"session_id,omitempty"` // value of the workload's session header
+	Turn           int               `json:"turn"`
+	StartTime      float64           `json:"t0"`
+	TTFT           float64           `json:"ttft_ms"`
+	ITLs           []float64         `json:"itls_ms,omitempty"`
+	EndTime        float64           `json:"tend"`
+	PromptTokens   int               `json:"prompt_tokens"`
+	CachedTokens   *int              `json:"cached_tokens,omitempty"` // prompt tokens served from the prefix cache; nil when the server does not report it
+	OutputTokens   int               `json:"output_tokens"`
+	TotalLatencyMs float64           `json:"latency_ms"`
+	FinishReason   string            `json:"finish_reason,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"` // response headers named by the workload's record_headers
+	Status         string            `json:"status"`            // "ok" or "error"
+	Error          string            `json:"error,omitempty"`
 
 	// Eval fields (populated when dataset provides ExpectedAnswer)
 	EvalExpected  string `json:"eval_expected,omitempty"`

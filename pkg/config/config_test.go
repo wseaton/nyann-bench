@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -552,5 +553,47 @@ func TestParseJSONWithSweep(t *testing.T) {
 		if sc.Stages[i].Duration != 2*time.Minute {
 			t.Errorf("stage %d: expected 2m, got %v", i, sc.Stages[i].Duration)
 		}
+	}
+}
+
+func TestParseJSONSessionFields(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {"mode": "poisson", "rate": 2, "duration": "5m"},
+		"workload": {
+			"type": "synthetic",
+			"turns": 20,
+			"session_header": "x-session-id",
+			"think_time": {"median": "3s", "sigma": 1.5, "max": "10m"},
+			"record_headers": ["x-upstream-host"]
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := sc.Workload
+	want := config.ThinkTime{Median: config.Duration(3 * time.Second), Sigma: 1.5, Max: config.Duration(10 * time.Minute)}
+	if w.SessionHeader != "x-session-id" || w.ThinkTime == nil || *w.ThinkTime != want ||
+		len(w.RecordHeaders) != 1 || w.RecordHeaders[0] != "x-upstream-host" {
+		t.Errorf("workload = %+v, think_time = %+v", w, w.ThinkTime)
+	}
+}
+
+func TestParseJSONThinkTimeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  string
+		want string
+	}{
+		{"missing median", `{"load": {"duration": "1m"}, "workload": {"type": "faker", "think_time": {"sigma": 1}}}`, `median must be > 0`},
+		{"negative sigma", `{"load": {"duration": "1m"}, "workload": {"type": "faker", "think_time": {"median": "1s", "sigma": -1}}}`, `sigma must be >= 0`},
+		{"max below median", `{"load": {"duration": "1m"}, "workload": {"type": "faker", "think_time": {"median": "5s", "max": "1s"}}}`, `must be >= median`},
+		{"conversation_pool", `{"load": {"mode": "conversation_pool", "concurrency": 4, "duration": "1m"}, "workload": {"type": "faker", "turns": 3, "think_time": {"median": "1s"}}}`, `not supported in conversation_pool`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Parse(tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+		})
 	}
 }

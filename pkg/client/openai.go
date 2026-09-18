@@ -47,9 +47,16 @@ type TokenEvent struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails breaks down prompt tokens. vLLM only reports it when
+// started with --enable-prompt-tokens-details.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type Result struct {
@@ -62,6 +69,7 @@ type Result struct {
 	GeneratedText string // Reasoning and visible content in streamed order, used for workload replay
 	FinishReason  string // "stop", "length", etc.
 	Usage         *Usage
+	Header        http.Header // Response headers
 	Err           error
 }
 
@@ -279,6 +287,7 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 		return result
 	}
 	defer resp.Body.Close()
+	result.Header = resp.Header
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -392,6 +401,7 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 		return result
 	}
 	defer resp.Body.Close()
+	result.Header = resp.Header
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)

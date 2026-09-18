@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -828,4 +829,169 @@ func containsImpl(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestStarlarkWorkloadSystemPrompt(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", system_prompt="You are adapter-3."),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SystemPrompt != "You are adapter-3." {
+		t.Errorf("expected system_prompt to round-trip, got %q", sc.Workload.SystemPrompt)
+	}
+
+	path = writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err = config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SystemPrompt != "" {
+		t.Errorf("expected empty system_prompt by default, got %q", sc.Workload.SystemPrompt)
+	}
+}
+
+func TestStarlarkWorkloadSessionFields(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", mode="poisson", rate=2)],
+    workload = workload(
+        "synthetic",
+        turns = 20,
+        session_header = "x-session-id",
+        think_time = "3s",
+        think_time_sigma = 1.5,
+        think_time_max = "10m",
+        record_headers = ["x-upstream-host", "x-gateway-destination-endpoint"],
+    ),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := sc.Workload
+	if w.SessionHeader != "x-session-id" {
+		t.Errorf("session_header = %q, want x-session-id", w.SessionHeader)
+	}
+	want := config.ThinkTime{
+		Median: config.Duration(3 * time.Second),
+		Sigma:  1.5,
+		Max:    config.Duration(10 * time.Minute),
+	}
+	if w.ThinkTime == nil || *w.ThinkTime != want {
+		t.Errorf("think_time = %+v, want %+v", w.ThinkTime, want)
+	}
+	if len(w.RecordHeaders) != 2 || w.RecordHeaders[0] != "x-upstream-host" || w.RecordHeaders[1] != "x-gateway-destination-endpoint" {
+		t.Errorf("record_headers = %v", w.RecordHeaders)
+	}
+}
+
+func TestStarlarkWorkloadSessionFieldsDefault(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := sc.Workload
+	if w.SessionHeader != "" || w.ThinkTime != nil || w.RecordHeaders != nil {
+		t.Errorf("expected no session fields by default, got header %q think_time %+v record_headers %v",
+			w.SessionHeader, w.ThinkTime, w.RecordHeaders)
+	}
+}
+
+func TestStarlarkThinkTimeIntSecondsAndIntSigma(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", think_time=2, think_time_sigma=1),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.ThinkTime{Median: config.Duration(2 * time.Second), Sigma: 1}
+	if sc.Workload.ThinkTime == nil || *sc.Workload.ThinkTime != want {
+		t.Errorf("think_time = %+v, want %+v", sc.Workload.ThinkTime, want)
+	}
+}
+
+func TestStarlarkPerStageSessionWorkload(t *testing.T) {
+	path := writeStarFile(t, `
+agent = workload("synthetic", turns=10, session_header="x-session-id", think_time="1s")
+scenario(
+    stages = [
+        stage("30s"),
+        stage("60s", mode="poisson", rate=1, workload=agent),
+    ],
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SessionHeader != "" {
+		t.Errorf("default workload picked up session_header %q", sc.Workload.SessionHeader)
+	}
+	w := sc.Stages[1].Workload
+	if w == nil || w.SessionHeader != "x-session-id" || w.ThinkTime == nil || w.ThinkTime.Median.Duration() != time.Second {
+		t.Errorf("stage workload = %+v", w)
+	}
+}
+
+func TestStarlarkSessionFieldErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		workload string
+		stage    string
+		want     string
+	}{
+		{"sigma without think_time", `workload("faker", think_time_sigma=1.0)`, `stage("60s")`, `require think_time`},
+		{"max without think_time", `workload("faker", think_time_max="1m")`, `stage("60s")`, `require think_time`},
+		{"bad think_time", `workload("faker", think_time="soon")`, `stage("60s")`, `think_time: invalid duration`},
+		{"bad think_time_max", `workload("faker", think_time="1s", think_time_max="later")`, `stage("60s")`, `think_time_max: invalid duration`},
+		{"string sigma", `workload("faker", think_time="1s", think_time_sigma="wide")`, `stage("60s")`, `think_time_sigma must be a number`},
+		{"zero think_time", `workload("faker", think_time="0s")`, `stage("60s")`, `median must be > 0`},
+		{"negative sigma", `workload("faker", think_time="1s", think_time_sigma=-0.5)`, `stage("60s")`, `sigma must be >= 0`},
+		{"max below median", `workload("faker", think_time="10s", think_time_max="5s")`, `stage("60s")`, `must be >= median`},
+		{"record_headers not a list", `workload("faker", record_headers="x-upstream-host")`, `stage("60s")`, `record_headers must be a list`},
+		{"record_headers element not a string", `workload("faker", record_headers=["x-upstream-host", 3])`, `stage("60s")`, `record_headers[1] must be a string`},
+		{"think_time in conversation_pool", `workload("faker", turns=3, think_time="1s")`, `stage("60s", mode="conversation_pool", concurrency=4)`, `not supported in conversation_pool`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeStarFile(t, "scenario(stages=["+tc.stage+"], workload="+tc.workload+")\n")
+			_, err := config.ParseStarlark(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStarlarkThinkTimeInConversationPoolStageWorkload(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", mode="conversation_pool", concurrency=4, workload=workload("faker", turns=3, think_time="1s"))],
+)
+`)
+	_, err := config.ParseStarlark(path)
+	if err == nil || !strings.Contains(err.Error(), "not supported in conversation_pool") {
+		t.Fatalf("error = %v, want think_time rejected on a conversation_pool stage workload", err)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -39,6 +40,14 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 // tokenCounter is optional; when non-nil datasets count each chunk via the
 // remote /tokenize endpoint and proportionally trim toward the target length.
 func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
+	ds, err := buildBaseDataset(w, charsPerToken, tokenCounter)
+	if err != nil || w.SystemPrompt == "" {
+		return ds, err
+	}
+	return &dataset.WithSystemPrompt{Inner: ds, Prompt: w.SystemPrompt}, nil
+}
+
+func buildBaseDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
 		subISL = *w.SubsequentISL
@@ -97,6 +106,16 @@ type scenarioOpts struct {
 	StreamUsage bool            // Request token usage stats (stream_options include_usage)
 	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
+	// TokenizerTarget and TokenizerModel send calibration and /tokenize calls
+	// somewhere other than Target and Model, e.g. a tokenizer service beside a
+	// router that would otherwise schedule them like inference requests. Empty
+	// means Target and Model.
+	TokenizerTarget string
+	TokenizerModel  string
+
+	// Seed replays session arrivals and think times across runs (0 = unseeded).
+	Seed int64
+
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
 	// query Prometheus and print live per-stage results.
@@ -136,10 +155,20 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		slog.Info("Subsequent ISL configured", "isl", w.ISL, "subsequent_isl", *w.SubsequentISL)
 	}
 
-	charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
+	tokenizerModel := opts.TokenizerModel
+	if tokenizerModel == "" {
+		tokenizerModel = model
+	}
+	tc := c
+	if opts.TokenizerTarget != "" {
+		tc = client.New(opts.TokenizerTarget)
+		slog.Info("Tokenizing against a separate endpoint", "target", opts.TokenizerTarget, "model", tokenizerModel)
+	}
+
+	charsPerToken := calibrateTokenRatio(ctx, tc, tokenizerModel, w.CharsPerToken)
 
 	tokenCounter := func(text string) (int, error) {
-		return c.CountTokens(ctx, text, model)
+		return tc.CountTokens(ctx, text, tokenizerModel)
 	}
 
 	ds := opts.Dataset
@@ -285,7 +314,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		canExtend := len(runs) > 0 &&
 			runs[len(runs)-1].target == rs.target &&
 			runs[len(runs)-1].model == rs.model &&
-			workloadEqual(runs[len(runs)-1].workload, rs.workload)
+			reflect.DeepEqual(runs[len(runs)-1].workload, rs.workload)
 
 		if canExtend {
 			runs[len(runs)-1].stages = append(runs[len(runs)-1].stages, rs.loadgen)
@@ -338,7 +367,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			runTokenCounter := tokenCounter
 			if runWorkload.CharsPerToken > 0 {
 				runCharsPerToken = runWorkload.CharsPerToken
-			} else if runTarget != target {
+			} else if runTarget != target && opts.TokenizerTarget == "" {
 				runC := client.New(runTarget)
 				runCharsPerToken = calibrateTokenRatio(ctx, runC, runModel, runWorkload.CharsPerToken)
 				runTokenCounter = func(text string) (int, error) {
@@ -377,6 +406,10 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			MaxInFlight:          genMaxInFlight,
 			ConversationPoolSize: run.stages[0].ConversationPoolSize,
 			CacheSalt:            runWorkload.CacheSalt,
+			SessionHeader:        runWorkload.SessionHeader,
+			Seed:                 opts.Seed,
+			ThinkTime:            runWorkload.ThinkTime,
+			RecordHeaders:        runWorkload.RecordHeaders,
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,
@@ -510,17 +543,4 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 	}
 
 	return summary, nil
-}
-
-// workloadEqual checks if two workload pointers refer to the same workload config.
-func workloadEqual(a, b *config.Workload) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return a.Type == b.Type && a.Name == b.Name &&
-		a.ISL == b.ISL && a.OSL == b.OSL && a.Turns == b.Turns &&
-		a.CorpusPath == b.CorpusPath && a.GSM8KPath == b.GSM8KPath
 }
