@@ -191,6 +191,10 @@ func (g *Generator) RunStagesUntil(ctx context.Context, stages []Stage, onStage 
 		g.runConversationPoolStages(ctx, stages, onStage, onBarrier, onStageComplete)
 		return
 	}
+	if g.Mode == ModeConstant || g.Mode == ModePoisson {
+		g.runRateBasedStages(ctx, stages, onStage, onBarrier)
+		return
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -279,9 +283,9 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	case ModeConversationPool:
 		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
 	case ModeConstant:
-		g.runRateBasedConstant(ctx, c, startTime)
+		g.runRateBased(ctx, ctx, c, startTime, false)
 	case ModePoisson:
-		g.runRateBasedPoisson(ctx, c, startTime)
+		g.runRateBased(ctx, ctx, c, startTime, true)
 	default:
 		return nil, fmt.Errorf("unknown mode: %s", g.Mode)
 	}
@@ -315,17 +319,36 @@ func (g *Generator) runConcurrent(ctx context.Context, c *client.Client) {
 	wg.Wait()
 }
 
-// runRateBasedConstant sends requests at evenly-spaced intervals.
-func (g *Generator) runRateBasedConstant(ctx context.Context, c *client.Client, startTime time.Time) {
-	g.runRateBased(ctx, c, startTime, false)
+// runRateBasedStages runs each stage as an arrival process for its own duration.
+func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	g.stopFunc = cancel
+
+	c := client.New(g.Target)
+	for i, stage := range stages {
+		if ctx.Err() != nil {
+			break
+		}
+		if stage.Barrier {
+			if onBarrier != nil {
+				onBarrier(i)
+			}
+			continue
+		}
+		if onStage != nil {
+			onStage(i, stage.Concurrency)
+		}
+		dispatchCtx, stop := context.WithTimeout(ctx, stage.Duration)
+		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson)
+		stop()
+	}
+	g.recordWG.Wait()
 }
 
-// runRateBasedPoisson sends requests with exponentially-distributed inter-arrival times.
-func (g *Generator) runRateBasedPoisson(ctx context.Context, c *client.Client, startTime time.Time) {
-	g.runRateBased(ctx, c, startTime, true)
-}
-
-func (g *Generator) runRateBased(ctx context.Context, c *client.Client, startTime time.Time, poisson bool) {
+// runRateBased dispatches at g.Rate until dispatchCtx ends, then waits for the
+// dispatched conversations, which run under ctx.
+func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool) {
 	var sem chan struct{}
 	if g.MaxInFlight > 0 {
 		sem = make(chan struct{}, g.MaxInFlight)
@@ -335,7 +358,7 @@ func (g *Generator) runRateBased(ctx context.Context, c *client.Client, startTim
 	streamID := 0
 
 	for {
-		if ctx.Err() != nil {
+		if dispatchCtx.Err() != nil {
 			break
 		}
 
@@ -356,12 +379,11 @@ func (g *Generator) runRateBased(ctx context.Context, c *client.Client, startTim
 		}
 
 		select {
-		case <-ctx.Done():
-			break
+		case <-dispatchCtx.Done():
 		case <-time.After(gap):
 		}
 
-		if ctx.Err() != nil {
+		if dispatchCtx.Err() != nil {
 			break
 		}
 
@@ -369,15 +391,13 @@ func (g *Generator) runRateBased(ctx context.Context, c *client.Client, startTim
 		if sem != nil {
 			select {
 			case sem <- struct{}{}:
-			case <-ctx.Done():
-				break
+			case <-dispatchCtx.Done():
 			}
-			if ctx.Err() != nil {
+			if dispatchCtx.Err() != nil {
 				break
 			}
 		}
 
-		conversation := g.Dataset.NextConversation()
 		convID := fmt.Sprintf("w%d-c%d", streamID, streamID)
 		sid := streamID
 		streamID++
@@ -388,7 +408,7 @@ func (g *Generator) runRateBased(ctx context.Context, c *client.Client, startTim
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			g.runConversation(ctx, c, sid, convID, conversation)
+			g.runConversation(ctx, c, sid, convID, g.Dataset.NextConversation())
 		}()
 	}
 
