@@ -70,6 +70,7 @@ type Workload struct {
 	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
 	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
 	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
+	SessionHeader  string     `json:"session_header,omitempty"`   // header carrying a per-conversation session id
 	ThinkTime      *ThinkTime `json:"think_time,omitempty"`       // pause between turns
 }
 

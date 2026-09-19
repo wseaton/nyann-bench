@@ -913,3 +913,53 @@ scenario(
 		t.Fatalf("error = %v, want a conversation_pool rejection", err)
 	}
 }
+
+func TestStarlarkWorkloadSessionHeader(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", session_header="x-session-id"),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SessionHeader != "x-session-id" {
+		t.Errorf("session_header = %q", sc.Workload.SessionHeader)
+	}
+
+	path = writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err = config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SessionHeader != "" {
+		t.Errorf("session_header = %q, want empty by default", sc.Workload.SessionHeader)
+	}
+}
+
+func TestParseSessionHeaderFromJSONAndYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"json", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","session_header":"x-session-id"}}`},
+		{"yaml", "---\nload:\n  concurrency: 1\n  duration: 1s\nworkload:\n  type: faker\n  session_header: x-session-id\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := config.Parse(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sc.Workload.SessionHeader != "x-session-id" {
+				t.Fatalf("session_header = %q", sc.Workload.SessionHeader)
+			}
+		})
+	}
+}

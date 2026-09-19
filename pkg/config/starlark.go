@@ -105,6 +105,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
+		sessionHeader  starlark.Value = starlark.None
 		thinkTime      starlark.Value = starlark.None
 		thinkTimeSigma starlark.Value = starlark.None
 		thinkTimeMax   starlark.Value = starlark.None
@@ -124,6 +125,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
+		"session_header?", &sessionHeader,
 		"think_time?", &thinkTime,
 		"think_time_sigma?", &thinkTimeSigma,
 		"think_time_max?", &thinkTimeMax,
@@ -188,6 +190,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token":  starlark.Float(charsPerToken),
 		"cache_salt":       cacheSalt,
 		"name":             name,
+		"session_header":   sessionHeader,
 		"think_time":       thinkTime,
 		"think_time_sigma": thinkTimeSigma,
 		"think_time_max":   thinkTimeMax,
@@ -513,6 +516,9 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 
 	name, _ := s.Attr("name")
 	w.Name = starlarkString(name)
+
+	sessionHeader, _ := s.Attr("session_header")
+	w.SessionHeader = starlarkString(sessionHeader)
 
 	thinkTime, _ := s.Attr("think_time")
 	if thinkTime != starlark.None {

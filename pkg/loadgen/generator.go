@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	mathrand "math/rand"
@@ -66,7 +69,9 @@ type Generator struct {
 	Dataset              dataset.Dataset
 	Recorder             *recorder.Recorder
 	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
+	SessionHeader        string            // Header carrying a per-conversation session id ("" = none)
 	ThinkTime            *config.ThinkTime // Pause between turns (nil = none)
+	Seed                 int64             // Seeds arrivals and think times (0 = unseeded)
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -284,9 +289,9 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	case ModeConversationPool:
 		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
 	case ModeConstant:
-		g.runRateBased(ctx, ctx, c, startTime, false)
+		g.runRateBased(ctx, ctx, c, startTime, false, g.rng("arrivals"))
 	case ModePoisson:
-		g.runRateBased(ctx, ctx, c, startTime, true)
+		g.runRateBased(ctx, ctx, c, startTime, true, g.rng("arrivals"))
 	default:
 		return nil, fmt.Errorf("unknown mode: %s", g.Mode)
 	}
@@ -327,6 +332,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 	g.stopFunc = cancel
 
 	c := client.New(g.Target)
+	arrivals := g.rng("arrivals")
 	for i, stage := range stages {
 		if ctx.Err() != nil {
 			break
@@ -341,7 +347,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 			onStage(i, stage.Concurrency)
 		}
 		dispatchCtx, stop := context.WithTimeout(ctx, stage.Duration)
-		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson)
+		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson, arrivals)
 		stop()
 	}
 	g.recordWG.Wait()
@@ -349,7 +355,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 
 // runRateBased dispatches at g.Rate until dispatchCtx ends, then waits for the
 // dispatched conversations, which run under ctx.
-func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool) {
+func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool, arrivals *mathrand.Rand) {
 	var sem chan struct{}
 	if g.MaxInFlight > 0 {
 		sem = make(chan struct{}, g.MaxInFlight)
@@ -374,7 +380,7 @@ func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Cli
 		var gap time.Duration
 		if poisson {
 			// Exponential inter-arrival time
-			gap = time.Duration(float64(time.Second) * (-math.Log(1-mathrand.Float64()) / rate))
+			gap = time.Duration(float64(time.Second) * (-math.Log(1-arrivals.Float64()) / rate))
 		} else {
 			gap = time.Duration(float64(time.Second) / rate)
 		}
@@ -562,6 +568,7 @@ func (g *Generator) trackInFlight(delta int64) {
 }
 
 func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {
+	sessionID := g.newSessionID(convID)
 	req := &client.CompletionRequest{
 		Model:         g.Model,
 		Prompt:        conv.Prompt,
@@ -571,7 +578,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Stop:          conv.Stop,
 		Temperature:   conv.Temperature,
 		CacheSalt:     g.cacheSalt(),
-		ExtraHeaders:  g.requestHeaders(convID, 0),
+		ExtraHeaders:  g.requestHeaders(convID, sessionID, 0),
 	}
 
 	g.trackInFlight(1)
@@ -587,8 +594,19 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
-		g.recordResult(result, streamID, convID, 0, conv)
+		g.recordResult(result, streamID, convID, sessionID, 0, conv)
 	}()
+}
+
+// rng returns the source for one named stream of draws. When seeded it depends
+// only on Seed and key, never on goroutine interleaving.
+func (g *Generator) rng(key string) *mathrand.Rand {
+	if g.Seed == 0 {
+		return mathrand.New(mathrand.NewSource(mathrand.Int63()))
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return mathrand.New(mathrand.NewSource(g.Seed ^ int64(h.Sum64())))
 }
 
 // thinkTime draws the pause before a conversation's next turn from r.
@@ -603,17 +621,40 @@ func (g *Generator) thinkTime(r *mathrand.Rand) time.Duration {
 	return d
 }
 
-// requestHeaders stamps X-Request-Id with the model and the record id.
-func (g *Generator) requestHeaders(convID string, turn int) map[string]string {
-	return map[string]string{"X-Request-Id": fmt.Sprintf("%s|%s-t%d", g.Model, convID, turn)}
+// requestHeaders stamps X-Request-Id with the model and the record id, plus
+// the conversation's session id when a session header is configured.
+func (g *Generator) requestHeaders(convID, sessionID string, turn int) map[string]string {
+	headers := map[string]string{"X-Request-Id": fmt.Sprintf("%s|%s-t%d", g.Model, convID, turn)}
+	if g.SessionHeader != "" {
+		headers[g.SessionHeader] = sessionID
+	}
+	return headers
+}
+
+// newSessionID returns a session id, or "" with no session header. When seeded
+// it is derived from the seed and convID, so a replay presents the same ids.
+func (g *Generator) newSessionID(convID string) string {
+	if g.SessionHeader == "" {
+		return ""
+	}
+	var b [16]byte
+	if g.Seed == 0 {
+		rand.Read(b[:])
+	} else {
+		r := g.rng("session/" + convID)
+		binary.LittleEndian.PutUint64(b[:8], r.Uint64())
+		binary.LittleEndian.PutUint64(b[8:], r.Uint64())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // recordResult handles eval, metrics, and recording for a completed request.
-func (g *Generator) recordResult(result *client.Result, streamID int, convID string, turn int, conv dataset.Conversation) {
+func (g *Generator) recordResult(result *client.Result, streamID int, convID, sessionID string, turn int, conv dataset.Conversation) {
 	rec := &recorder.Record{
 		RequestID:      fmt.Sprintf("%s-t%d", convID, turn),
 		StreamID:       streamID,
 		ConversationID: convID,
+		SessionID:      sessionID,
 		Turn:           turn,
 		StartTime:      recorder.TimeToFloat(result.RequestStart),
 		EndTime:        recorder.TimeToFloat(result.EndTime),
@@ -733,9 +774,10 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	// with synthetic assistant placeholders; we extract only the new user
 	// message from each turn and substitute real responses.
 	var history []client.Message
+	sessionID := g.newSessionID(convID)
 	var think *mathrand.Rand
 	if g.ThinkTime != nil {
-		think = mathrand.New(mathrand.NewSource(mathrand.Int63()))
+		think = g.rng("think/" + convID)
 	}
 
 	for turnIdx, prebuilt := range conv.Turns {
@@ -766,7 +808,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			StreamOptions: g.streamOptions(),
 			MaxTokens:     conv.MaxTokens,
 			CacheSalt:     g.cacheSalt(),
-			ExtraHeaders:  g.requestHeaders(convID, turnIdx),
+			ExtraHeaders:  g.requestHeaders(convID, sessionID, turnIdx),
 		}
 
 		g.trackInFlight(1)
@@ -782,7 +824,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		g.recordWG.Add(1)
 		go func(turn int) {
 			defer g.recordWG.Done()
-			g.recordResult(result, streamID, convID, turn, conv)
+			g.recordResult(result, streamID, convID, sessionID, turn, conv)
 		}(turnIdx)
 
 		if result.Err != nil {
