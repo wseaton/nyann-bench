@@ -66,6 +66,7 @@ type Generator struct {
 	Dataset              dataset.Dataset
 	Recorder             *recorder.Recorder
 	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
+	ThinkTime            *config.ThinkTime // Pause between turns (nil = none)
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -589,6 +590,18 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 	}()
 }
 
+// thinkTime draws the pause before a conversation's next turn from r.
+func (g *Generator) thinkTime(r *mathrand.Rand) time.Duration {
+	if g.ThinkTime == nil {
+		return 0
+	}
+	d := time.Duration(float64(g.ThinkTime.Median.Duration()) * math.Exp(g.ThinkTime.Sigma*r.NormFloat64()))
+	if limit := g.ThinkTime.Max.Duration(); limit > 0 && d > limit {
+		d = limit
+	}
+	return d
+}
+
 // recordResult handles eval, metrics, and recording for a completed request.
 func (g *Generator) recordResult(result *client.Result, streamID int, convID string, turn int, conv dataset.Conversation) {
 	rec := &recorder.Record{
@@ -714,10 +727,23 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	// with synthetic assistant placeholders; we extract only the new user
 	// message from each turn and substitute real responses.
 	var history []client.Message
+	var think *mathrand.Rand
+	if g.ThinkTime != nil {
+		think = mathrand.New(mathrand.NewSource(mathrand.Int63()))
+	}
 
 	for turnIdx, prebuilt := range conv.Turns {
 		if ctx.Err() != nil {
 			return
+		}
+		if turnIdx > 0 {
+			if pause := g.thinkTime(think); pause > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(pause):
+				}
+			}
 		}
 
 		// The last message in each pre-built turn is the new user message.
