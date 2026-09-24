@@ -263,12 +263,16 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 
 		effectiveConcurrency := ss.Concurrency
 		effectiveConversationPoolSize := ss.ConversationPoolSize
+		effectiveRate := ss.Rate
+		effectiveMaxInFlight := ss.MaxInFlight
 		if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
 			effectiveConversationPoolSize = effectiveConcurrency
 		}
 		if sc.Workers > 1 {
 			effectiveConcurrency = config.DivideConcurrency(ss.Concurrency, sc.Workers, sc.WorkerID)
 			effectiveConversationPoolSize = config.DivideConcurrency(ss.ConversationPoolSize, sc.Workers, sc.WorkerID)
+			effectiveRate = config.DivideRate(ss.Rate, sc.Workers)
+			effectiveMaxInFlight = config.DivideConcurrency(ss.MaxInFlight, sc.Workers, sc.WorkerID)
 			if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
 				effectiveConversationPoolSize = effectiveConcurrency
 			}
@@ -289,6 +293,8 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 				Duration:             ss.Duration,
 				Rampup:               ss.Rampup,
 				MaxRequests:          ss.MaxRequests,
+				Rate:                 effectiveRate,
+				MaxInFlight:          effectiveMaxInFlight,
 			},
 			target:   effectiveTarget,
 			model:    effectiveModel,

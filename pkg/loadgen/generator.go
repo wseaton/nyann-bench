@@ -178,6 +178,8 @@ type Stage struct {
 	Duration             time.Duration
 	Rampup               time.Duration // stagger new stream starts over this duration
 	MaxRequests          int           // stop after this many requests (0 = unlimited)
+	Rate                 float64       // constant/poisson: requests per second (0 = Generator.Rate)
+	MaxInFlight          int           // constant/poisson: cap on concurrent requests (0 = Generator.MaxInFlight)
 	Barrier              bool          // sync point — pool stays alive (unless BarrierDrain), onBarrier fires
 	BarrierDrain         bool          // stop pool before sync, fresh pool after
 }
@@ -290,9 +292,9 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	case ModeConversationPool:
 		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
 	case ModeConstant:
-		g.runRateBased(ctx, ctx, c, startTime, false, g.rng("arrivals"))
+		g.runRateBased(ctx, ctx, c, startTime, false, g.rng("arrivals"), g.Rate, g.MaxInFlight, g.Rampup, new(int))
 	case ModePoisson:
-		g.runRateBased(ctx, ctx, c, startTime, true, g.rng("arrivals"))
+		g.runRateBased(ctx, ctx, c, startTime, true, g.rng("arrivals"), g.Rate, g.MaxInFlight, g.Rampup, new(int))
 	default:
 		return nil, fmt.Errorf("unknown mode: %s", g.Mode)
 	}
@@ -336,6 +338,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 
 	c := client.New(g.Target)
 	arrivals := g.rng("arrivals")
+	nextStream := 0
 	for i, stage := range stages {
 		if ctx.Err() != nil {
 			break
@@ -350,23 +353,30 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 			onStage(i, stage.Concurrency)
 		}
 		dispatchCtx, stop := context.WithTimeout(ctx, stage.Duration)
-		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson, arrivals)
+		rate, maxInFlight := stage.Rate, stage.MaxInFlight
+		if rate == 0 {
+			rate = g.Rate
+		}
+		if maxInFlight == 0 {
+			maxInFlight = g.MaxInFlight
+		}
+		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson, arrivals, rate, maxInFlight, stage.Rampup, &nextStream)
 		stop()
 	}
 	g.recordWG.Wait()
 }
 
-// runRateBased dispatches requests at g.Rate until dispatchCtx ends, evenly
-// spaced or with exponential gaps drawn from arrivals when poisson is set,
-// then waits for the dispatched requests, which run under ctx.
-func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool, arrivals *mathrand.Rand) {
+// runRateBased dispatches requests at targetRate, ramped over rampup, until
+// dispatchCtx ends, evenly spaced or with exponential gaps drawn from arrivals
+// when poisson is set, then waits for the dispatched requests, which run under
+// ctx. nextStream numbers conversations across calls so ids stay unique.
+func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool, arrivals *mathrand.Rand, targetRate float64, maxInFlight int, rampup time.Duration, nextStream *int) {
 	var sem chan struct{}
-	if g.MaxInFlight > 0 {
-		sem = make(chan struct{}, g.MaxInFlight)
+	if maxInFlight > 0 {
+		sem = make(chan struct{}, maxInFlight)
 	}
 
 	var wg sync.WaitGroup
-	streamID := 0
 
 	for {
 		if dispatchCtx.Err() != nil {
@@ -375,7 +385,7 @@ func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Cli
 
 		// Compute next arrival time
 		elapsed := time.Since(startTime).Seconds()
-		rate := g.rate(elapsed)
+		rate := rampedRate(targetRate, rampup, elapsed)
 		if rate <= 0 {
 			time.Sleep(10 * time.Millisecond)
 			continue
@@ -409,9 +419,9 @@ func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Cli
 			}
 		}
 
-		convID := fmt.Sprintf("w%d-c%d", streamID, streamID)
-		sid := streamID
-		streamID++
+		sid := *nextStream
+		*nextStream++
+		convID := fmt.Sprintf("w%d-c%d", sid, sid)
 
 		// Build the conversation inside the goroutine: datasets that count
 		// tokens remotely would otherwise cap the arrival rate at one
@@ -429,14 +439,13 @@ func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Cli
 	wg.Wait()
 }
 
-// rate returns the effective request rate at a given elapsed time,
-// accounting for linear rampup.
-func (g *Generator) rate(elapsed float64) float64 {
-	if g.Rampup.Seconds() <= 0 || elapsed >= g.Rampup.Seconds() {
-		return g.Rate
+// rampedRate returns the request rate at a given elapsed time, ramping
+// linearly from 0 to target over rampup.
+func rampedRate(target float64, rampup time.Duration, elapsed float64) float64 {
+	if rampup.Seconds() <= 0 || elapsed >= rampup.Seconds() {
+		return target
 	}
-	// Linear ramp from 0 to target rate
-	return g.Rate * (elapsed / g.Rampup.Seconds())
+	return target * (elapsed / rampup.Seconds())
 }
 
 func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID int, delay time.Duration) {

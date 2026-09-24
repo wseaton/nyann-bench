@@ -428,3 +428,40 @@ func TestSeedReplaysArrivalsAndThinkTimes(t *testing.T) {
 		t.Fatal("a different seed replayed the same think gaps")
 	}
 }
+
+func TestRateBasedStagesRunAtTheirOwnRates(t *testing.T) {
+	url, requests := sessionServer(t)
+	gen := &loadgen.Generator{
+		Target:   url + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConstant,
+		Rate:     10,
+		Dataset:  dataset.NewSynthetic(16, 4, 1, 4.0),
+		Recorder: recorder.NewMemory(),
+	}
+	var firstStage int
+	gen.RunStages(context.Background(), []loadgen.Stage{
+		{Duration: time.Second, Rate: 10},
+		{Duration: time.Second, Rate: 60},
+	}, func(i, _ int) {
+		if i == 1 {
+			firstStage = len(requests())
+		}
+	}, nil)
+
+	seen := requests()
+	secondStage := len(seen) - firstStage
+	if firstStage < 8 || firstStage > 11 {
+		t.Errorf("first stage at 10/s sent %d requests in 1s", firstStage)
+	}
+	if secondStage < 50 || secondStage > 61 {
+		t.Errorf("second stage at 60/s sent %d requests in 1s", secondStage)
+	}
+	ids := map[string]bool{}
+	for _, r := range seen {
+		if ids[r.requestID] {
+			t.Fatalf("request id %q repeats across stages", r.requestID)
+		}
+		ids[r.requestID] = true
+	}
+}
