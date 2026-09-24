@@ -66,6 +66,7 @@ type Generator struct {
 	Dataset              dataset.Dataset
 	Recorder             *recorder.Recorder
 	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
+	Headers              map[string]string // HTTP headers sent on every request
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -550,6 +551,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Stop:          conv.Stop,
 		Temperature:   conv.Temperature,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.Headers,
 	}
 
 	g.trackInFlight(1)
@@ -714,6 +716,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			StreamOptions: g.streamOptions(),
 			MaxTokens:     conv.MaxTokens,
 			CacheSalt:     g.cacheSalt(),
+			ExtraHeaders:  g.Headers,
 		}
 
 		g.trackInFlight(1)

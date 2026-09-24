@@ -1447,3 +1447,67 @@ func readRecords(t *testing.T, path string) []recorder.Record {
 	}
 	return records
 }
+
+func TestHeadersAppearOnEveryRequestPath(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = append(seen[r.URL.Path], r.Header.Get("X-Llm-D-Inference-Objective"))
+		mu.Unlock()
+		choice := map[string]any{"delta": map[string]string{"content": "hi"}, "finish_reason": "stop"}
+		if strings.HasSuffix(r.URL.Path, "/completions") && !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			choice = map[string]any{"text": "hi", "finish_reason": "stop"}
+		}
+		data, _ := json.Marshal(map[string]any{"choices": []map[string]any{choice}})
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	for _, mode := range []loadgen.Mode{loadgen.ModeConcurrent, loadgen.ModeConversationPool} {
+		for _, ds := range []struct {
+			name string
+			path string
+			data dataset.Dataset
+		}{
+			{"chat", "/v1/chat/completions", dataset.NewSynthetic(8, 4, 2, 4.0)},
+			{"completion", "/v1/completions", &completionEvalDataset{answer: "42"}},
+		} {
+			t.Run(string(mode)+"/"+ds.name, func(t *testing.T) {
+				mu.Lock()
+				delete(seen, ds.path)
+				mu.Unlock()
+				gen := &loadgen.Generator{
+					Target:               "http://" + ln.Addr().String() + "/v1",
+					Model:                "test-model",
+					Mode:                 mode,
+					Concurrency:          1,
+					ConversationPoolSize: 2,
+					Duration:             300 * time.Millisecond,
+					Dataset:              ds.data,
+					Recorder:             recorder.NewMemory(),
+					Headers:              map[string]string{"x-llm-d-inference-objective": "live"},
+				}
+				if _, err := gen.Run(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(seen[ds.path]) == 0 {
+					t.Fatalf("no requests reached %s", ds.path)
+				}
+				for i, v := range seen[ds.path] {
+					if v != "live" {
+						t.Fatalf("request %d to %s carried objective %q", i, ds.path, v)
+					}
+				}
+			})
+		}
+	}
+}

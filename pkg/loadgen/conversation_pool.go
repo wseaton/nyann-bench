@@ -290,6 +290,7 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		StreamOptions: g.streamOptions(),
 		MaxTokens:     pc.conv.MaxTokens,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.Headers,
 	}
 
 	g.trackInFlight(1)
@@ -331,6 +332,7 @@ func (g *Generator) runPooledCompletionTurn(ctx context.Context, c *client.Clien
 		Stop:          pc.conv.Stop,
 		Temperature:   pc.conv.Temperature,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.Headers,
 	}
 
 	g.trackInFlight(1)

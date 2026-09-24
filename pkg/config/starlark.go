@@ -104,6 +104,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		gpqaPath       starlark.Value = starlark.None
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
+		headers        *starlark.Dict
 		name           starlark.Value = starlark.None
 	)
 
@@ -120,6 +121,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"gpqa_path?", &gpqaPath,
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
+		"headers?", &headers,
 		"name?", &name,
 	); err != nil {
 		return nil, err
@@ -146,6 +148,19 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		return nil, fmt.Errorf("gpqa_path is required when type is \"gpqa\"")
 	}
 
+	var headersVal starlark.Value = starlark.None
+	if headers != nil {
+		for _, item := range headers.Items() {
+			if _, ok := item[0].(starlark.String); !ok {
+				return nil, fmt.Errorf("headers: name %s is not a string", item[0])
+			}
+			if _, ok := item[1].(starlark.String); !ok {
+				return nil, fmt.Errorf("headers: value for %s is not a string", item[0])
+			}
+		}
+		headersVal = headers
+	}
+
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeWorkload), starlark.StringDict{
 		"type":             starlark.String(typ),
 		"isl":              starlark.MakeInt(isl),
@@ -159,6 +174,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"gpqa_path":        gpqaPath,
 		"chars_per_token":  starlark.Float(charsPerToken),
 		"cache_salt":       cacheSalt,
+		"headers":          headersVal,
 		"name":             name,
 	}), nil
 }
@@ -478,6 +494,14 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 	if cacheSalt != starlark.None {
 		saltStr := starlarkString(cacheSalt)
 		w.CacheSalt = parseCacheSaltString(saltStr)
+	}
+
+	headers, _ := s.Attr("headers")
+	if dict, ok := headers.(*starlark.Dict); ok {
+		w.Headers = make(map[string]string, dict.Len())
+		for _, item := range dict.Items() {
+			w.Headers[starlarkString(item[0])] = starlarkString(item[1])
+		}
 	}
 
 	name, _ := s.Attr("name")

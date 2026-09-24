@@ -261,6 +261,12 @@ Or with a YAML or Starlark config file:
 
 All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`.
 
+`headers` sends fixed HTTP headers on every request, for example to tag traffic with a router objective:
+
+```python
+workload = workload("synthetic", isl=512, osl=128, headers={"x-llm-d-inference-objective": "live"})
+```
+
 ## Load modes
 
 | Mode | Description |

@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -552,5 +553,33 @@ func TestParseJSONWithSweep(t *testing.T) {
 		if sc.Stages[i].Duration != 2*time.Minute {
 			t.Errorf("stage %d: expected 2m, got %v", i, sc.Stages[i].Duration)
 		}
+	}
+}
+
+func TestParseHeadersFromJSONAndYAML(t *testing.T) {
+	for name, input := range map[string]string{
+		"json": `{"load": {"concurrency": 1, "duration": "10s"}, "workload": {"type": "synthetic", "headers": {"x-llm-d-inference-objective": "live"}}}`,
+		"yaml": "load:\n  concurrency: 1\n  duration: 10s\nworkload:\n  type: synthetic\n  headers:\n    x-llm-d-inference-objective: live\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config."+name)
+			if err := os.WriteFile(path, []byte(input), 0644); err != nil {
+				t.Fatal(err)
+			}
+			sc, err := config.Parse(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sc.Workload.Headers["x-llm-d-inference-objective"]; got != "live" {
+				t.Errorf("objective header = %q, want live", got)
+			}
+		})
+	}
+}
+
+func TestParseRejectsInvalidHeaderName(t *testing.T) {
+	_, err := config.Parse(`{"load": {"concurrency": 1, "duration": "10s"}, "workload": {"type": "synthetic", "headers": {"bad header": "x"}}}`)
+	if err == nil || !strings.Contains(err.Error(), "invalid header name") {
+		t.Fatalf("expected invalid header name error, got %v", err)
 	}
 }
