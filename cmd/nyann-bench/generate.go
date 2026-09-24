@@ -37,6 +37,7 @@ func generateCmd() *cobra.Command {
 		prometheusURL   string
 		deployName      string
 		streamUsage     bool
+		maxConsecErrors int
 		kubeFlags       kube.Flags
 	)
 
@@ -196,16 +197,17 @@ Workload types:
 			var collected []*analysis.ServerMetrics
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
-				Target:          target,
-				Model:           model,
-				Scenario:        sc,
-				OutputDir:       outputDir,
-				WorkerID:        workerID,
-				MetricsAddr:     metricsAddr,
-				StreamUsage:     streamUsage,
-				TokenizerTarget: tokenizerTarget,
-				TokenizerModel:  tokenizerModel,
-				Seed:            seed,
+				Target:               target,
+				Model:                model,
+				Scenario:             sc,
+				OutputDir:            outputDir,
+				WorkerID:             workerID,
+				MetricsAddr:          metricsAddr,
+				StreamUsage:          streamUsage,
+				MaxConsecutiveErrors: maxConsecErrors,
+				TokenizerTarget:      tokenizerTarget,
+				TokenizerModel:       tokenizerModel,
+				Seed:                 seed,
 				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) bool {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
@@ -307,6 +309,7 @@ Workload types:
 	cmd.Flags().StringVar(&prometheusURL, "prometheus-url", "", "Prometheus server URL for querying server-side vLLM metrics (e.g. http://prometheus:9090)")
 	cmd.Flags().StringVar(&deployName, "deploy-name", "", "Deployment name prefix for Prometheus pod label filtering (e.g. my-deploy)")
 	cmd.Flags().BoolVar(&streamUsage, "stream-usage", false, "Request prompt/completion token counts from the server (stream_options include_usage)")
+	cmd.Flags().IntVar(&maxConsecErrors, "max-consecutive-errors", 5, "Abort the run after this many consecutive request errors; negative never aborts")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 

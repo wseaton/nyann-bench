@@ -75,6 +75,7 @@ type Generator struct {
 	Headers              map[string]string // HTTP headers sent on every request
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
+	MaxConsecutiveErrors int               // Abort after this many consecutive errors (0 = 5, negative = never)
 
 	recorderPtr atomic.Pointer[recorder.Recorder] // swappable recorder for warmup→main transition
 	recordWG    sync.WaitGroup                    // tracks in-flight recordResult goroutines
@@ -559,12 +560,16 @@ func (g *Generator) getRecorder() *recorder.Recorder {
 
 func (g *Generator) trackRequestStatus(err error) {
 	if err != nil {
+		limit := g.MaxConsecutiveErrors
+		if limit == 0 {
+			limit = defaultMaxConsecutiveErrors
+		}
 		n := g.consecutiveErrors.Add(1)
-		if int(n) >= defaultMaxConsecutiveErrors {
+		if limit > 0 && int(n) >= limit {
 			g.stopOnce.Do(func() {
 				slog.Error("Aborting: too many consecutive request errors",
 					"count", n,
-					"threshold", defaultMaxConsecutiveErrors,
+					"threshold", limit,
 					"last_error", err)
 				if g.stopFunc != nil {
 					g.stopFunc()

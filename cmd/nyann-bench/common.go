@@ -97,14 +97,15 @@ func buildBaseDataset(w *config.Workload, charsPerToken float64, tokenCounter fu
 }
 
 type scenarioOpts struct {
-	Target      string
-	Model       string
-	Scenario    *config.ScenarioConfig
-	OutputDir   string
-	WorkerID    int
-	MetricsAddr string
-	StreamUsage bool            // Request token usage stats (stream_options include_usage)
-	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
+	Target               string
+	Model                string
+	Scenario             *config.ScenarioConfig
+	OutputDir            string
+	WorkerID             int
+	MetricsAddr          string
+	StreamUsage          bool            // Request token usage stats (stream_options include_usage)
+	MaxConsecutiveErrors int             // Abort after this many consecutive errors (negative = never)
+	Dataset              dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
 	// TokenizerTarget and TokenizerModel send calibration and /tokenize calls
 	// somewhere other than Target and Model, e.g. a tokenizer service beside a
@@ -421,6 +422,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			Recorder:             rec,
 			Metrics:              m,
 			StreamUsage:          opts.StreamUsage,
+			MaxConsecutiveErrors: opts.MaxConsecutiveErrors,
 		}
 
 		gen.RunStagesUntil(ctx, run.stages, func(i, concurrency int) {

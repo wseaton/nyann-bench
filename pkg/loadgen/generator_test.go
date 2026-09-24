@@ -1598,3 +1598,39 @@ func TestHeadersAppearOnEveryRequestPath(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxConsecutiveErrors(t *testing.T) {
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "engine gone", http.StatusServiceUnavailable)
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	run := func(limit int) time.Duration {
+		gen := &loadgen.Generator{
+			Target:               "http://" + ln.Addr().String() + "/v1",
+			Model:                "test-model",
+			Mode:                 loadgen.ModeConstant,
+			Rate:                 100,
+			Duration:             time.Second,
+			Dataset:              dataset.NewSynthetic(8, 4, 1, 4.0),
+			Recorder:             recorder.NewMemory(),
+			MaxConsecutiveErrors: limit,
+		}
+		start := time.Now()
+		if _, err := gen.Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(start)
+	}
+	if d := run(0); d > 500*time.Millisecond {
+		t.Errorf("default limit ran %s against a failing server, want an early abort", d)
+	}
+	if d := run(-1); d < 900*time.Millisecond {
+		t.Errorf("negative limit stopped after %s, want the full 1s run", d)
+	}
+}
