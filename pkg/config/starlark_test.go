@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -993,5 +994,47 @@ scenario(
 	_, err := config.ParseStarlark(path)
 	if err == nil || !strings.Contains(err.Error(), "not supported in conversation_pool") {
 		t.Fatalf("error = %v, want think_time rejected on a conversation_pool stage workload", err)
+	}
+}
+
+func TestStarlarkHeaders(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", workload=workload("faker", headers={"x-llm-d-inference-objective": "batch"}))],
+    workload = workload("faker", headers={"x-llm-d-inference-objective": "live", "x-tenant": "a"}),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"x-llm-d-inference-objective": "live", "x-tenant": "a"}
+	if !reflect.DeepEqual(sc.Workload.Headers, want) {
+		t.Errorf("workload headers = %v, want %v", sc.Workload.Headers, want)
+	}
+	if got := sc.Stages[0].Workload.Headers["x-llm-d-inference-objective"]; got != "batch" {
+		t.Errorf("stage workload objective = %q, want batch", got)
+	}
+}
+
+func TestStarlarkHeadersRejectsInvalid(t *testing.T) {
+	for name, expr := range map[string]string{
+		"non-string value": `{"x-a": 1}`,
+		"non-string name":  `{1: "a"}`,
+		"invalid name":     `{"bad header": "a"}`,
+		"invalid value":    `{"x-a": "line\nbreak"}`,
+		"not a dict":       `["x-a"]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", headers=`+expr+`),
+)
+`)
+			if _, err := config.ParseStarlark(path); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
 	}
 }

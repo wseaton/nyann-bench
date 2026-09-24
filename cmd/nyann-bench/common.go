@@ -410,6 +410,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			Seed:                 opts.Seed,
 			ThinkTime:            runWorkload.ThinkTime,
 			RecordHeaders:        runWorkload.RecordHeaders,
+			Headers:              runWorkload.Headers,
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,

@@ -57,23 +57,24 @@ type Load struct {
 
 // Workload defines the dataset and request parameters.
 type Workload struct {
-	Type           string     `json:"type"`                       // synthetic, faker, corpus, gsm8k
-	Name           string     `json:"name,omitempty"`             // human-readable name for this workload (shown in Prometheus/Grafana)
-	ISL            int        `json:"isl"`                        // input sequence length (tokens)
-	SubsequentISL  *int       `json:"subsequent_isl,omitempty"`   // ISL for turns > 0 (defaults to ISL)
-	OSL            int        `json:"osl"`                        // output sequence length (tokens)
-	Turns          int        `json:"turns"`                      // turns per conversation
-	CorpusPath     string     `json:"corpus_path,omitempty"`      // path to corpus file/directory
-	GSM8KPath      string     `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
-	GSM8KTrainPath string     `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)
-	NumFewShot     *int       `json:"num_fewshot,omitempty"`      // number of few-shot examples (default: 5, requires gsm8k_train_path)
-	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
-	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
-	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
-	SystemPrompt   string     `json:"system_prompt,omitempty"`    // fixed system message sent first on every chat request (not counted in ISL)
-	SessionHeader  string     `json:"session_header,omitempty"`   // header carrying a random per-conversation session id on every turn
-	ThinkTime      *ThinkTime `json:"think_time,omitempty"`       // pause between turns of a conversation
-	RecordHeaders  []string   `json:"record_headers,omitempty"`   // response headers copied into each request record
+	Type           string            `json:"type"`                       // synthetic, faker, corpus, gsm8k
+	Name           string            `json:"name,omitempty"`             // human-readable name for this workload (shown in Prometheus/Grafana)
+	ISL            int               `json:"isl"`                        // input sequence length (tokens)
+	SubsequentISL  *int              `json:"subsequent_isl,omitempty"`   // ISL for turns > 0 (defaults to ISL)
+	OSL            int               `json:"osl"`                        // output sequence length (tokens)
+	Turns          int               `json:"turns"`                      // turns per conversation
+	CorpusPath     string            `json:"corpus_path,omitempty"`      // path to corpus file/directory
+	GSM8KPath      string            `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
+	GSM8KTrainPath string            `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)
+	NumFewShot     *int              `json:"num_fewshot,omitempty"`      // number of few-shot examples (default: 5, requires gsm8k_train_path)
+	GPQAPath       string            `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
+	CharsPerToken  float64           `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
+	CacheSalt      *CacheSalt        `json:"cache_salt,omitempty"`       // prefix cache isolation config
+	SystemPrompt   string            `json:"system_prompt,omitempty"`    // fixed system message sent first on every chat request (not counted in ISL)
+	SessionHeader  string            `json:"session_header,omitempty"`   // header carrying a random per-conversation session id on every turn
+	ThinkTime      *ThinkTime        `json:"think_time,omitempty"`       // pause between turns of a conversation
+	RecordHeaders  []string          `json:"record_headers,omitempty"`   // response headers copied into each request record
+	Headers        map[string]string `json:"headers,omitempty"`          // HTTP headers sent on every request
 }
 
 // ThinkTime draws the pause between a response and the conversation's next

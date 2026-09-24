@@ -72,6 +72,7 @@ type Generator struct {
 	ThinkTime            *config.ThinkTime // Pause between turns of a conversation (nil = none)
 	RecordHeaders        []string          // Response headers copied into each record
 	Seed                 int64             // Seeds session arrivals and think times so runs replay the same workload (0 = unseeded)
+	Headers              map[string]string // HTTP headers sent on every request
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -583,6 +584,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Stop:          conv.Stop,
 		Temperature:   conv.Temperature,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.Headers,
 	}
 
 	g.trackInFlight(1)
@@ -606,7 +608,11 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 // gateway access log can be joined back to requests_N.jsonl, and carries the
 // conversation's session id when a session header is configured.
 func (g *Generator) requestHeaders(convID, sessionID string, turn int) map[string]string {
-	headers := map[string]string{"X-Request-Id": fmt.Sprintf("%s|%s-t%d", g.Model, convID, turn)}
+	headers := make(map[string]string, len(g.Headers)+2)
+	for k, v := range g.Headers {
+		headers[k] = v
+	}
+	headers["X-Request-Id"] = fmt.Sprintf("%s|%s-t%d", g.Model, convID, turn)
 	if g.SessionHeader != "" {
 		headers[g.SessionHeader] = sessionID
 	}

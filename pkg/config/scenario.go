@@ -8,6 +8,8 @@ import (
 	"math"
 	"strconv"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // ParseScenarioIR decodes the bounded internal representation passed from the
@@ -144,7 +146,15 @@ func (sc *ScenarioConfig) Validate() error {
 			return fmt.Errorf("workload: %w", err)
 		}
 	}
+	if err := validateHeaders(sc.Workload.Headers); err != nil {
+		return err
+	}
 	for i, s := range sc.Stages {
+		if s.Workload != nil {
+			if err := validateHeaders(s.Workload.Headers); err != nil {
+				return fmt.Errorf("stage %d: %w", i, err)
+			}
+		}
 		if s.Barrier {
 			continue
 		}
@@ -174,6 +184,18 @@ func (sc *ScenarioConfig) Validate() error {
 			} else if s.ConversationPoolSize < s.Concurrency {
 				return fmt.Errorf("stage %d: conversation_pool_size (%d) must be >= concurrency (%d)", i, s.ConversationPoolSize, s.Concurrency)
 			}
+		}
+	}
+	return nil
+}
+
+func validateHeaders(headers map[string]string) error {
+	for name, value := range headers {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("headers: invalid header name %q", name)
+		}
+		if !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("headers: invalid value for header %q", name)
 		}
 	}
 	return nil
